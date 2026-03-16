@@ -5,6 +5,12 @@ set -euo pipefail
 # Default values
 DEFAULT_MTDPARTS="512k(u-boot),512k(u-boot-env),512k(factory),-(firmware)"
 DEFAULT_BAUDRATE="115200"
+DEFAULT_CONFIG_DIR="configs-mt7621"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BOARD="${BOARD:-}"
+LOADED_DEFCONFIG=""
+DEFCONFIG_ARGS=()
 
 FLASH=""
 MTDPARTS=""
@@ -36,6 +42,7 @@ print_usage() {
 Usage:
   ./build.sh                      # 交互式选择
   ./build.sh [options]            # 非交互式构建
+  BOARD=<board> ./build.sh        # 自动加载 configs-mt7621/<board>_defconfig
 
 Options:
   --flash {NOR|NAND|NMBM}         闪存类型
@@ -70,6 +77,38 @@ Options:
     --baudrate 115200 \
     --yes
 EOF
+}
+
+load_board_defconfig() {
+  local board="$1"
+  local cfg_file="${SCRIPT_DIR}/${DEFAULT_CONFIG_DIR}/${board}_defconfig"
+  local line
+  local -a parsed
+
+  if [[ ! -f "${cfg_file}" ]]; then
+    echo "错误: 指定 BOARD='${board}'，但未找到配置文件: ${cfg_file}"; return 1
+  fi
+
+  DEFCONFIG_ARGS=()
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    # 去掉首尾空白
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    # 跳过空行和注释
+    if [[ -z "${line}" || "${line}" == \#* ]]; then
+      continue
+    fi
+
+    parsed=()
+    # 使用 shell 语义拆分（支持引号），仅用于本地 defconfig 文件
+    # shellcheck disable=SC2206
+    eval "parsed=(${line})"
+    if (( ${#parsed[@]} > 0 )); then
+      DEFCONFIG_ARGS+=("${parsed[@]}")
+    fi
+  done < "${cfg_file}"
+
+  LOADED_DEFCONFIG="${cfg_file}"
 }
 
 parse_args() {
@@ -288,7 +327,12 @@ EOF
 }
 
 main() {
-  parse_args "$@"
+  if [[ -n "${BOARD}" ]]; then
+    load_board_defconfig "${BOARD}" || exit 1
+    parse_args "${DEFCONFIG_ARGS[@]}" "$@"
+  else
+    parse_args "$@"
+  fi
   # 如未直接提供 mtdparts，但提供了各分区大小，则拼接
   if [[ -z "${MTDPARTS}" ]] && { [[ -n "${UBOOT_SIZE}" ]] || [[ -n "${UBOOT_ENV_SIZE}" ]] || [[ -n "${FACTORY_SIZE}" ]]; }; then
     MTDPARTS=$(build_mtdparts)
@@ -302,6 +346,10 @@ main() {
   # defaults
   if [[ -z "${BOARD_NAME}" ]] && [[ -n "${MODEL}" ]]; then
     BOARD_NAME="${MODEL}"
+  fi
+
+  if [[ -n "${LOADED_DEFCONFIG}" ]]; then
+    echo "已加载 BOARD 配置: ${LOADED_DEFCONFIG}"
   fi
 
   summary
